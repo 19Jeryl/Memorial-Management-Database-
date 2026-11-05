@@ -1,0 +1,251 @@
+-- Memorial Lot Management and Burial Record Tracking System
+-- 23-table MySQL schema; target MySQL 8.0.16+ (CHECK constraints enforced)
+-- Import using phpMyAdmin > Import.
+CREATE DATABASE IF NOT EXISTS memorial_management_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE memorial_management_db;
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE IF EXISTS activity_logs, grave_coordinates, burial_records, interment_requests, validation_discrepancies, ocr_extractions, documents, payments, lot_qr_codes, contract_lots, reservations, memorial_lots, lot_types, blocks, sections, beneficiaries, sales_contracts, buyers, document_types, role_permissions, permissions, users, roles;
+SET FOREIGN_KEY_CHECKS=1;
+
+CREATE TABLE roles (
+ role_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ role_name VARCHAR(50) NOT NULL UNIQUE,
+ description VARCHAR(255)
+) ENGINE=InnoDB;
+
+CREATE TABLE users (
+ user_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ role_id INT UNSIGNED NOT NULL,
+ username VARCHAR(50) NOT NULL UNIQUE,
+ password VARCHAR(255) NOT NULL,
+ full_name VARCHAR(100) NOT NULL,
+ email VARCHAR(100) UNIQUE,
+ contact_number VARCHAR(20),
+ status ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ CONSTRAINT fk_users_role FOREIGN KEY (role_id) REFERENCES roles(role_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE permissions (
+ permission_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ permission_name VARCHAR(100) NOT NULL UNIQUE,
+ description VARCHAR(255)
+) ENGINE=InnoDB;
+
+CREATE TABLE role_permissions (
+ role_permission_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ role_id INT UNSIGNED NOT NULL,
+ permission_id INT UNSIGNED NOT NULL,
+ UNIQUE KEY uq_role_permission (role_id, permission_id),
+ CONSTRAINT fk_rp_role FOREIGN KEY (role_id) REFERENCES roles(role_id) ON UPDATE CASCADE ON DELETE CASCADE,
+ CONSTRAINT fk_rp_permission FOREIGN KEY (permission_id) REFERENCES permissions(permission_id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE buyers (
+ buyer_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ user_id INT UNSIGNED NULL UNIQUE,
+ first_name VARCHAR(50) NOT NULL,
+ middle_name VARCHAR(50),
+ last_name VARCHAR(50) NOT NULL,
+ contact_number VARCHAR(20),
+ email VARCHAR(100),
+ address VARCHAR(255),
+ CONSTRAINT fk_buyers_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE beneficiaries (
+ beneficiary_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ buyer_id INT UNSIGNED NOT NULL,
+ full_name VARCHAR(100) NOT NULL,
+ relationship VARCHAR(50),
+ date_of_birth DATE,
+ contact_number VARCHAR(20),
+ CONSTRAINT fk_beneficiaries_buyer FOREIGN KEY (buyer_id) REFERENCES buyers(buyer_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE sections (
+ section_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ section_name VARCHAR(50) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+CREATE TABLE blocks (
+ block_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ section_id INT UNSIGNED NOT NULL,
+ block_name VARCHAR(20) NOT NULL,
+ UNIQUE KEY uq_section_block (section_id, block_name),
+ CONSTRAINT fk_blocks_section FOREIGN KEY (section_id) REFERENCES sections(section_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE lot_types (
+ lot_type_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ type_name VARCHAR(50) NOT NULL UNIQUE,
+ description VARCHAR(255),
+ price_per_sqm DECIMAL(10,2) NOT NULL DEFAULT 0.00
+) ENGINE=InnoDB;
+
+CREATE TABLE memorial_lots (
+ lot_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ block_id INT UNSIGNED NOT NULL,
+ lot_type_id INT UNSIGNED NOT NULL,
+ lot_number VARCHAR(50) NOT NULL,
+ area_sqm DECIMAL(9,2),
+ status ENUM('Available','Reserved','Purchased','Occupied') NOT NULL DEFAULT 'Available',
+ UNIQUE KEY uq_block_lot_number (block_id, lot_number),
+ CONSTRAINT fk_lots_block FOREIGN KEY (block_id) REFERENCES blocks(block_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT fk_lots_type FOREIGN KEY (lot_type_id) REFERENCES lot_types(lot_type_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE reservations (
+ reservation_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ buyer_id INT UNSIGNED NOT NULL,
+ lot_id INT UNSIGNED NOT NULL,
+ reservation_date DATE NOT NULL,
+ expiry_date DATE,
+ status ENUM('Active','Expired','Cancelled','Converted') NOT NULL DEFAULT 'Active',
+ CONSTRAINT fk_reservations_buyer FOREIGN KEY (buyer_id) REFERENCES buyers(buyer_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT fk_reservations_lot FOREIGN KEY (lot_id) REFERENCES memorial_lots(lot_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE sales_contracts (
+ contract_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ buyer_id INT UNSIGNED NOT NULL,
+ contract_number VARCHAR(50) NOT NULL UNIQUE,
+ contract_date DATE NOT NULL,
+ total_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+ status ENUM('Pending','Validated','Discrepancy','Completed','Cancelled') NOT NULL DEFAULT 'Pending',
+ CONSTRAINT fk_contracts_buyer FOREIGN KEY (buyer_id) REFERENCES buyers(buyer_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE contract_lots (
+ contract_lot_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ contract_id INT UNSIGNED NOT NULL,
+ lot_id INT UNSIGNED NOT NULL,
+ price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+ UNIQUE KEY uq_contract_lot (contract_id, lot_id),
+ CONSTRAINT fk_contract_lots_contract FOREIGN KEY (contract_id) REFERENCES sales_contracts(contract_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT fk_contract_lots_lot FOREIGN KEY (lot_id) REFERENCES memorial_lots(lot_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE payments (
+ payment_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ contract_id INT UNSIGNED NOT NULL,
+ payment_date DATE NOT NULL,
+ amount DECIMAL(12,2) NOT NULL,
+ payment_method VARCHAR(50),
+ reference_number VARCHAR(100),
+ status ENUM('Pending','Paid','Partial') NOT NULL DEFAULT 'Pending',
+ CONSTRAINT fk_payments_contract FOREIGN KEY (contract_id) REFERENCES sales_contracts(contract_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE document_types (
+ document_type_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ type_name VARCHAR(100) NOT NULL UNIQUE,
+ description VARCHAR(255)
+) ENGINE=InnoDB;
+
+-- Each document must belong to exactly one sales contract OR one interment request.
+CREATE TABLE documents (
+ document_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ document_type_id INT UNSIGNED NOT NULL,
+ contract_id INT UNSIGNED NULL,
+ interment_request_id INT UNSIGNED NULL,
+ file_name VARCHAR(255) NOT NULL,
+ file_path VARCHAR(500) NOT NULL,
+ upload_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ status ENUM('Submitted','Verified','Rejected') NOT NULL DEFAULT 'Submitted',
+ CONSTRAINT chk_document_parent CHECK ((contract_id IS NOT NULL AND interment_request_id IS NULL) OR (contract_id IS NULL AND interment_request_id IS NOT NULL)),
+ CONSTRAINT fk_documents_type FOREIGN KEY (document_type_id) REFERENCES document_types(document_type_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT fk_documents_contract FOREIGN KEY (contract_id) REFERENCES sales_contracts(contract_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE ocr_extractions (
+ ocr_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ document_id INT UNSIGNED NOT NULL,
+ extracted_data LONGTEXT NOT NULL,
+ extraction_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ confidence_score DECIMAL(5,2),
+ CONSTRAINT fk_ocr_document FOREIGN KEY (document_id) REFERENCES documents(document_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE validation_discrepancies (
+ validation_discrepancy_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ ocr_id INT UNSIGNED NOT NULL,
+ field_name VARCHAR(100) NOT NULL,
+ extracted_value VARCHAR(255),
+ database_value VARCHAR(255),
+ remarks VARCHAR(255),
+ status ENUM('For Review','Confirmed','Corrected') NOT NULL DEFAULT 'For Review',
+ CONSTRAINT fk_discrepancies_ocr FOREIGN KEY (ocr_id) REFERENCES ocr_extractions(ocr_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE interment_requests (
+ interment_request_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ contract_lot_id INT UNSIGNED NOT NULL,
+ request_date DATE NOT NULL,
+ requested_by VARCHAR(100),
+ status ENUM('Pending','Approved','Rejected','Completed') NOT NULL DEFAULT 'Pending',
+ CONSTRAINT fk_interment_contract_lot FOREIGN KEY (contract_lot_id) REFERENCES contract_lots(contract_lot_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+ALTER TABLE documents ADD CONSTRAINT fk_documents_interment FOREIGN KEY (interment_request_id) REFERENCES interment_requests(interment_request_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+CREATE TABLE burial_records (
+ burial_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ interment_request_id INT UNSIGNED NOT NULL,
+ beneficiary_id INT UNSIGNED NOT NULL,
+ date_of_death DATE,
+ burial_date DATE NOT NULL,
+ interment_type VARCHAR(50),
+ remarks VARCHAR(255),
+ CONSTRAINT fk_burial_interment FOREIGN KEY (interment_request_id) REFERENCES interment_requests(interment_request_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT fk_burial_beneficiary FOREIGN KEY (beneficiary_id) REFERENCES beneficiaries(beneficiary_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE grave_coordinates (
+ grave_coordinate_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ burial_id INT UNSIGNED NOT NULL,
+ latitude DECIMAL(10,7) NOT NULL,
+ longitude DECIMAL(10,7) NOT NULL,
+ recorded_by INT UNSIGNED NOT NULL,
+ recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ CONSTRAINT fk_grave_burial FOREIGN KEY (burial_id) REFERENCES burial_records(burial_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT fk_grave_user FOREIGN KEY (recorded_by) REFERENCES users(user_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+ CONSTRAINT chk_latitude CHECK (latitude BETWEEN -90 AND 90),
+ CONSTRAINT chk_longitude CHECK (longitude BETWEEN -180 AND 180)
+) ENGINE=InnoDB;
+
+-- Enforces at most one active QR per lot while retaining inactive historical QR rows.
+CREATE TABLE lot_qr_codes (
+ qr_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ lot_id INT UNSIGNED NOT NULL,
+ qr_code VARCHAR(255) NOT NULL UNIQUE,
+ is_active TINYINT(1) NOT NULL DEFAULT 1,
+ generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ active_lot_id INT UNSIGNED GENERATED ALWAYS AS (CASE WHEN is_active = 1 THEN lot_id ELSE NULL END) STORED,
+ UNIQUE KEY uq_one_active_qr_per_lot (active_lot_id),
+ CONSTRAINT fk_qr_lot FOREIGN KEY (lot_id) REFERENCES memorial_lots(lot_id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE activity_logs (
+ log_id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ user_id INT UNSIGNED NULL,
+ action VARCHAR(100) NOT NULL,
+ module VARCHAR(100) NOT NULL,
+ description TEXT,
+ log_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ CONSTRAINT fk_activity_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_documents_contract ON documents(contract_id);
+CREATE INDEX idx_documents_interment ON documents(interment_request_id);
+CREATE INDEX idx_ocr_document ON ocr_extractions(document_id);
+CREATE INDEX idx_discrepancies_ocr ON validation_discrepancies(ocr_id);
+CREATE INDEX idx_reservations_buyer ON reservations(buyer_id);
+CREATE INDEX idx_reservations_lot ON reservations(lot_id);
+CREATE INDEX idx_contract_lots_lot ON contract_lots(lot_id);
+CREATE INDEX idx_interment_contract_lot ON interment_requests(contract_lot_id);
+CREATE INDEX idx_burial_beneficiary ON burial_records(beneficiary_id);
+CREATE INDEX idx_grave_recorded_by ON grave_coordinates(recorded_by);
+CREATE INDEX idx_activity_user ON activity_logs(user_id);
+
+-- Schema only: no real personal or client records are inserted.
